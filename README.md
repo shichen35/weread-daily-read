@@ -47,7 +47,12 @@ gh secret set STATE_WRITER_PAT
 
 它会触发 `shelf` workflow，用 `WEREAD_STATE` 在 Actions 里拉取书架（本地不用再登录），约一分钟后显示书架：↑↓ 移动，PgUp/PgDn 翻页，Home/End 跳到首尾，空格勾选，回车确认，再确认一次后写入 `WEREAD_BOOK`。
 
-之后想换书，重新运行即可：已选的书排在最上面并默认勾上，只需增减。加 `--dry-run` 只打印结果不写入（下次也不会预选）。
+之后想换书，重新运行即可：
+
+- 开头会显示 `Currently selected: N books`，已选的书排在最上面并默认勾上，只需增减。读不到 `WEREAD_BOOK` 时会提示原因，这次不预选。
+- 已选但不在书架上的条目标为 `(not on shelf)`，保持勾选；手动填的阅读页链接会对应到书架上的书，保存时改写成 bookId。
+- 公众号文章和导入的书没有数字 bookId，网页阅读器打不开，不会出现在列表里。
+- `--dry-run` 只打印结果不写入（下次也不会预选）；不在仓库目录里运行时用 `--repo <用户名>/weread-daily-read`。
 
 **5. 试运行两分钟：**
 
@@ -68,6 +73,16 @@ gh workflow run daily-read -f minutes=2
 
 定时任务在北京时间 01:00 触发（GitHub 可能延迟启动）。手动运行默认立即开始，可用 `-f window=10` 测试随机开始。日志第一行 `plan:` 会显示本次的等待时间、开始时间、时长和选书情况。
 
+## Workflow
+
+| workflow | 触发 | 作用 |
+|---|---|---|
+| `daily-read` | 每天北京时间 01:00，或手动 | 上报阅读时长 |
+| `shelf` | `books.py` 触发，或手动 | 续期并写回凭据，把书架导出为 artifact `shelf`（保留 1 天） |
+| `tests` | push 到 `main`、PR | 单元测试，含选书界面的按键测试 |
+
+`daily-read` 和 `shelf` 用同一个 `concurrency` 组，保证同一时间只有一个任务写凭据；`shelf` 会排在正在运行的 `daily-read` 之后。
+
 ## 工作原理
 
 1. 启动时续期 Cookie 并写回 Secret，之后每 20 分钟续期一次。
@@ -75,16 +90,30 @@ gh workflow run daily-read -f minutes=2
 3. 每 30 秒上报一次 `rt=30`；只有返回 `synckey` 的上报才计入时长。阅读页信息每 15 分钟刷新。
 4. 失败时依次：同步章节信息（缺少 `synckey` 时）→ 刷新阅读页重试 → 续期后重试。连续 3 次失败则退出。
 
-`daily-read` 和 `shelf` 用同一个 `concurrency` 组，保证同一时间只有一个任务写凭据。
-
 ## 退出码
+
+`report.py`（`daily-read`）和 `shelf.py`（`shelf`）：
 
 | 退出码 | 含义 | 处理 |
 |---|---|---|
 | 0 | 完成 | — |
-| 1 | 连续上报失败 | 查看日志中 `report rejected:` 后的错误码 |
+| 1 | 连续上报失败，包括一直拿不到 `synckey`（仅 `report.py`） | 查看日志中 `report rejected:` 或 `accepted without synckey` |
 | 2 | 登录失效 | 重新运行 `login.py --push` |
 | 3 | 写回 Secret 失败 | 检查 `STATE_WRITER_PAT` 的权限和有效期 |
+
+`books.py`（本地）：
+
+| 退出码 | 含义 | 处理 |
+|---|---|---|
+| 0 | 已保存、未选择或已取消 | — |
+| 1 | `shelf` 运行失败，或书架上没有可读的书 | 按提示运行 `gh run view <id> --log-failed` |
+| 3 | `gh` 命令失败 | 检查 `gh auth status` 和 `--repo` |
+| 130 | 按了 Ctrl+C | — |
+
+## 升级
+
+- 更新代码后重新安装本地依赖：`.venv/bin/pip install -r requirements-local.txt`（选书界面需要 `questionary`）。
+- 旧的单本书 `WEREAD_BOOK` 不用改，照样可用；想改成多本，运行 `books.py`。
 
 ## 注意事项
 
@@ -100,9 +129,13 @@ gh workflow run daily-read -f minutes=2
 
 ## 开发
 
+`weread.py` 协议和请求，`login.py` 扫码登录，`report.py` 上报，`shelf.py` 导出书架，`books.py` 本地选书。
+
 ```bash
 .venv/bin/python -m unittest discover -s tests
 ```
+
+测试需要装 `requirements-local.txt`，否则选书界面的按键测试会被跳过。
 
 欢迎提交 issue 和 PR。
 
