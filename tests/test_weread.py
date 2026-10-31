@@ -269,6 +269,15 @@ class PlanTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 report.parse_minutes(bad)
 
+    def test_pick_book(self):
+        self.assertEqual(report.pick_book("42"), ("42", 1))
+        rng = report.random.Random(3)
+        picks = {report.pick_book("1,2,3", rng)[0] for _ in range(50)}
+        self.assertEqual(picks, {"1", "2", "3"})
+        self.assertEqual(report.pick_book("1,2", rng)[1], 2)
+        with self.assertRaises(ValueError):
+            report.pick_book(" ")
+
     def test_no_window_starts_now(self):
         delay, minutes = report.plan("60", 0)
         self.assertEqual((delay, minutes), (0, 60))
