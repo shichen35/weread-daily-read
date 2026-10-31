@@ -37,6 +37,7 @@ from weread import (
     is_accepted,
     is_counted,
     load_state,
+    parse_books,
     read_payload,
     save_state,
 )
@@ -149,6 +150,14 @@ def plan(
     return rng.uniform(0, slack) * 60, minutes
 
 
+def pick_book(value: str, rng: random.Random | None = None) -> tuple[str, int]:
+    """Pick one book at random from WEREAD_BOOK; returns (book, how many to choose from)."""
+    books = parse_books(value)
+    if not books:
+        raise ValueError("no book: set WEREAD_BOOK to one or more bookIds")
+    return (rng or random.Random()).choice(books), len(books)
+
+
 def run(
     reporter: Reporter,
     minutes: float,
@@ -180,7 +189,8 @@ def run(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--book", default=os.environ.get("WEREAD_BOOK", ""),
-                        help="bookId or weread.qq.com/web/reader/ URL (env WEREAD_BOOK)")
+                        help="bookIds or reader URLs, comma separated; one is picked at random "
+                             "each run (env WEREAD_BOOK)")
     parser.add_argument("--minutes", default=os.environ.get("READ_MINUTES") or "60",
                         help='minutes to report: 60, a random range 45-75 or 60±10 (env READ_MINUTES)')
     parser.add_argument("--window", type=float, default=float(os.environ.get("READ_WINDOW") or 0),
@@ -189,9 +199,8 @@ def main() -> int:
     parser.add_argument("--interval", type=int, default=30, help="seconds between reports (min 10)")
     parser.add_argument("--state-file", type=Path, help="read/write state here instead of env WEREAD_STATE")
     args = parser.parse_args()
-    if not args.book:
-        parser.error("--book or WEREAD_BOOK is required")
     try:
+        book, choices = pick_book(args.book)
         delay, minutes = plan(args.minutes, args.window)
     except ValueError as exc:
         parser.error(str(exc))
@@ -200,14 +209,15 @@ def main() -> int:
     account = Account(load_state(args.state_file))
     reporter = Reporter(
         account,
-        args.book.strip(),
+        book,
         max(10, args.interval),
         lambda: save_state(
             account.state, args.state_file, in_actions, os.environ.get("GITHUB_REPOSITORY", "")
         ),
     )
     start = datetime.now() + timedelta(seconds=delay)
-    log(f"plan: wait {delay / 60:.1f} min, start {start:%H:%M:%S}, report {minutes:.1f} min")
+    log(f"plan: wait {delay / 60:.1f} min, start {start:%H:%M:%S}, report {minutes:.1f} min, "
+        f"book picked 1 of {choices}")
     time.sleep(delay)
     return run(reporter, minutes)
 

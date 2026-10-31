@@ -6,6 +6,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import books  # noqa: E402
 import report  # noqa: E402
 import weread  # noqa: E402
 from weread import AuthError, sorted_query  # noqa: E402
@@ -59,6 +60,14 @@ class ProtocolTest(unittest.TestCase):
         self.assertTrue(weread.is_counted({"succ": 1, "synckey": 0}))
         self.assertFalse(weread.is_counted({"succ": 1}))
         self.assertFalse(weread.is_counted(None))
+
+    def test_parse_books(self):
+        self.assertEqual(weread.parse_books("123"), ["123"])
+        self.assertEqual(weread.parse_books("1,2, 3\n4，5"), ["1", "2", "3", "4", "5"])
+        self.assertEqual(weread.parse_books("1,1,2"), ["1", "2"])
+        url = "https://weread.qq.com/web/reader/abc"
+        self.assertEqual(weread.parse_books(url), [url])
+        self.assertEqual(weread.parse_books(" , \n"), [])
 
     def test_merge_set_cookie_keeps_one_value_per_name_and_drops_empty(self):
         cookies = {"wr_skey": "old", "wr_ql": "0", "other": "x"}
@@ -130,6 +139,31 @@ class AccountTest(unittest.TestCase):
         self.assertEqual(req.call_args.args[1], "https://weread.qq.com/web/reader/abc")
         self.assertEqual((ctx["book_id"], ctx["chapter_uid"], ctx["chapter_idx"]), ("43208843", 12, 3))
         self.assertEqual((ctx["progress"], ctx["chapter_offset"], ctx["psvts"]), (55, 99, "PSV"))
+
+    def test_shelf_keeps_reader_books_in_order(self):
+        body = {"books": [
+            {"bookId": "2", "title": "B", "author": "Y"},
+            {"bookId": "MP_WXS_1", "title": "article"},
+            {"bookId": "1", "title": "A"},
+        ]}
+        with mock.patch("weread.requests.request", return_value=FakeResponse(body=body)):
+            books = self.account().shelf()
+        self.assertEqual(books, [
+            {"book_id": "2", "title": "B", "author": "Y"},
+            {"book_id": "1", "title": "A", "author": ""},
+        ])
+
+    def test_shelf_errors(self):
+        with mock.patch("weread.requests.request", return_value=FakeResponse(body={"errCode": -2012})):
+            with self.assertRaises(AuthError):
+                self.account().shelf()
+        with mock.patch("weread.requests.request", return_value=FakeResponse(body={"errCode": -1})):
+            with self.assertRaises(RuntimeError) as cm:
+                self.account().shelf()
+            self.assertNotIsInstance(cm.exception, AuthError)
+        with mock.patch("weread.requests.request", return_value=FakeResponse(status=502)):
+            with self.assertRaises(RuntimeError):
+                self.account().shelf()
 
     def test_load_context_rejects_foreign_urls(self):
         with self.assertRaises(ValueError):
@@ -236,6 +270,15 @@ class PlanTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 report.parse_minutes(bad)
 
+    def test_pick_book(self):
+        self.assertEqual(report.pick_book("42"), ("42", 1))
+        rng = report.random.Random(3)
+        picks = {report.pick_book("1,2,3", rng)[0] for _ in range(50)}
+        self.assertEqual(picks, {"1", "2", "3"})
+        self.assertEqual(report.pick_book("1,2", rng)[1], 2)
+        with self.assertRaises(ValueError):
+            report.pick_book(" ")
+
     def test_no_window_starts_now(self):
         delay, minutes = report.plan("60", 0)
         self.assertEqual((delay, minutes), (0, 60))
@@ -253,6 +296,49 @@ class PlanTest(unittest.TestCase):
         self.assertEqual((delay, minutes), (0, 30))
         delay, minutes = report.plan("60", 10_000, report.random.Random(2))
         self.assertLessEqual(delay / 60 + minutes, report.MAX_WINDOW_MINUTES)
+
+
+class BooksTest(unittest.TestCase):
+    def test_find_run_picks_newest_after_trigger(self):
+        since = books.datetime(2026, 1, 1, 12, 0, tzinfo=books.timezone.utc)
+        runs = [
+            {"databaseId": 1, "createdAt": "2026-01-01T11:59:00Z"},
+            {"databaseId": 3, "createdAt": "2026-01-01T12:00:09Z"},
+            {"databaseId": 2, "createdAt": "2026-01-01T12:00:05Z"},
+        ]
+        self.assertEqual(books.find_run(runs, since), 3)
+        self.assertIsNone(books.find_run(runs[:1], since))
+
+    def test_build_choices_prechecks_current_and_keeps_missing(self):
+        shelf = [{"book_id": "1", "title": "A", "author": "X"}, {"book_id": "2", "title": "B", "author": ""}]
+        self.assertEqual(books.build_choices(shelf, ["2", "9"]), [
+            ("A — X", "1", False),
+            ("B", "2", True),
+            ("9 (not on shelf)", "9", True),
+        ])
+
+    def test_fetch_shelf_runs_workflow_and_reads_artifact(self):
+        calls = []
+
+        def fake_gh(args, repo="", capture=True):
+            calls.append(args[:2])
+            if args[:2] == ["run", "list"]:
+                now = books.datetime.now(books.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                return json.dumps([{"databaseId": 7, "createdAt": now}])
+            if args[:2] == ["run", "download"]:
+                Path(args[args.index("--dir") + 1], "shelf.json").write_text('[{"book_id": "1"}]')
+            return ""
+
+        with mock.patch("books.gh", side_effect=fake_gh), mock.patch("books.time.sleep"), \
+                mock.patch("builtins.print"):
+            self.assertEqual(books.fetch_shelf("o/r"), [{"book_id": "1"}])
+        self.assertEqual(calls, [["workflow", "run"], ["run", "list"], ["run", "watch"], ["run", "download"]])
+
+    def test_gh_passes_repo(self):
+        with mock.patch("books.subprocess.run") as run:
+            run.return_value.stdout = "x"
+            self.assertEqual(books.gh(["variable", "get", "WEREAD_BOOK"], "o/r"), "x")
+        self.assertEqual(run.call_args.args[0], ["gh", "variable", "get", "WEREAD_BOOK", "--repo", "o/r"])
 
 
 if __name__ == "__main__":

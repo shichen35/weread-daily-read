@@ -19,6 +19,9 @@ BASE_URL = "https://weread.qq.com"
 RENEWAL_URL = f"{BASE_URL}/web/login/renewal"
 READ_URL = f"{BASE_URL}/web/book/read"
 CHAPTER_INFOS_URL = f"{BASE_URL}/web/book/chapterInfos"
+SHELF_URL = f"{BASE_URL}/web/shelf/sync?synckey=0&teenmode=0&album=1&onlyBookid=0"
+SHELF_PAGE_URL = f"{BASE_URL}/web/shelf"
+AUTH_ERROR_CODES = {-2010, -2012, -2013}
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0"
@@ -82,6 +85,15 @@ def web_app_id(user_agent: str = USER_AGENT) -> str:
     for char in user_agent:
         value = (131 * value + ord(char)) & 0x7FFFFFFF
     return f"wb{prefix}h{value}"
+
+
+def parse_books(value: str) -> list[str]:
+    """Split WEREAD_BOOK ("id1,id2", one per line, or a single id/URL); dedupe in order."""
+    seen: list[str] = []
+    for item in re.split(r"[,，\s]+", value or ""):
+        if item and item not in seen:
+            seen.append(item)
+    return seen
 
 
 def reader_url(book_id: str) -> str:
@@ -311,6 +323,32 @@ class Account:
             "POST", CHAPTER_INFOS_URL, referer=referer, json_body={"bookIds": [book_id]}
         )
         response.raise_for_status()
+
+    def shelf(self) -> list[dict[str, str]]:
+        """Books on the shelf that the Web reader can open, in shelf order."""
+        response = self.request("GET", SHELF_URL, referer=SHELF_PAGE_URL)
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            raise RuntimeError(f"shelf failed: HTTP {response.status_code}")
+        code = body.get("errCode", body.get("errcode"))
+        if code is not None:
+            error = AuthError if code in AUTH_ERROR_CODES else RuntimeError
+            raise error(f"shelf failed: HTTP {response.status_code} {describe(body)}")
+        books = []
+        for book in body.get("books") or []:
+            book_id = str(book.get("bookId") or "")
+            # Articles and uploads have non-numeric ids and no Web reader page.
+            if not book_id.isdigit():
+                continue
+            books.append({
+                "book_id": book_id,
+                "title": str(book.get("title") or book_id),
+                "author": str(book.get("author") or ""),
+            })
+        return books
 
     def report(self, payload: dict[str, Any], referer: str) -> Any:
         response = self.request("POST", READ_URL, referer=referer, json_body=payload)

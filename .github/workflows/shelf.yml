@@ -1,0 +1,34 @@
+name: shelf
+
+# Started by books.py: exports the shelf so books can be picked locally.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Shares the group with daily-read: one writer for WEREAD_STATE at a time.
+concurrency:
+  group: weread-state
+  cancel-in-progress: false
+
+jobs:
+  shelf:
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Export shelf
+        env:
+          WEREAD_STATE: ${{ secrets.WEREAD_STATE }}
+          GH_TOKEN: ${{ secrets.STATE_WRITER_PAT }}
+        run: python shelf.py --out shelf.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shelf
+          path: shelf.json
+          retention-days: 1
