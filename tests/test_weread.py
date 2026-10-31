@@ -60,6 +60,14 @@ class ProtocolTest(unittest.TestCase):
         self.assertFalse(weread.is_counted({"succ": 1}))
         self.assertFalse(weread.is_counted(None))
 
+    def test_parse_books(self):
+        self.assertEqual(weread.parse_books("123"), ["123"])
+        self.assertEqual(weread.parse_books("1,2, 3\n4，5"), ["1", "2", "3", "4", "5"])
+        self.assertEqual(weread.parse_books("1,1,2"), ["1", "2"])
+        url = "https://weread.qq.com/web/reader/abc"
+        self.assertEqual(weread.parse_books(url), [url])
+        self.assertEqual(weread.parse_books(" , \n"), [])
+
     def test_merge_set_cookie_keeps_one_value_per_name_and_drops_empty(self):
         cookies = {"wr_skey": "old", "wr_ql": "0", "other": "x"}
         weread.merge_set_cookie(cookies, [
@@ -130,6 +138,31 @@ class AccountTest(unittest.TestCase):
         self.assertEqual(req.call_args.args[1], "https://weread.qq.com/web/reader/abc")
         self.assertEqual((ctx["book_id"], ctx["chapter_uid"], ctx["chapter_idx"]), ("43208843", 12, 3))
         self.assertEqual((ctx["progress"], ctx["chapter_offset"], ctx["psvts"]), (55, 99, "PSV"))
+
+    def test_shelf_keeps_reader_books_in_order(self):
+        body = {"books": [
+            {"bookId": "2", "title": "B", "author": "Y"},
+            {"bookId": "MP_WXS_1", "title": "article"},
+            {"bookId": "1", "title": "A"},
+        ]}
+        with mock.patch("weread.requests.request", return_value=FakeResponse(body=body)):
+            books = self.account().shelf()
+        self.assertEqual(books, [
+            {"book_id": "2", "title": "B", "author": "Y"},
+            {"book_id": "1", "title": "A", "author": ""},
+        ])
+
+    def test_shelf_errors(self):
+        with mock.patch("weread.requests.request", return_value=FakeResponse(body={"errCode": -2012})):
+            with self.assertRaises(AuthError):
+                self.account().shelf()
+        with mock.patch("weread.requests.request", return_value=FakeResponse(body={"errCode": -1})):
+            with self.assertRaises(RuntimeError) as cm:
+                self.account().shelf()
+            self.assertNotIsInstance(cm.exception, AuthError)
+        with mock.patch("weread.requests.request", return_value=FakeResponse(status=502)):
+            with self.assertRaises(RuntimeError):
+                self.account().shelf()
 
     def test_load_context_rejects_foreign_urls(self):
         with self.assertRaises(ValueError):
