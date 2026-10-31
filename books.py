@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,13 @@ def gh(args: list[str], repo: str = "", capture: bool = True) -> str:
     cmd = ["gh", *args] + (["--repo", repo] if repo else [])
     result = subprocess.run(cmd, capture_output=capture, text=True, check=True)
     return result.stdout if capture else ""
+
+
+def gh_api(path: str, repo: str = "", jq: str = "") -> str:
+    """`gh api` takes no --repo; GH_REPO fills {owner}/{repo} instead."""
+    env = dict(os.environ, GH_REPO=repo) if repo else None
+    cmd = ["gh", "api", path] + (["--jq", jq] if jq else [])
+    return subprocess.run(cmd, capture_output=True, text=True, check=True, env=env).stdout
 
 
 def find_run(runs: list[dict[str, Any]], since: datetime) -> int | None:
@@ -68,10 +76,18 @@ def fetch_shelf(repo: str) -> list[dict[str, str]]:
 
 
 def current_books(repo: str) -> list[str]:
+    """The saved WEREAD_BOOK, read over REST so it works with any gh version."""
     try:
-        return parse_books(gh(["variable", "get", VARIABLE], repo))
-    except subprocess.CalledProcessError:
+        value = gh_api(f"repos/{{owner}}/{{repo}}/actions/variables/{VARIABLE}", repo, jq=".value")
+    except subprocess.CalledProcessError as exc:
+        if "404" in (exc.stderr or ""):
+            print(f"{VARIABLE} is not set yet; nothing pre-ticked.")
+        else:
+            print(f"Warning: could not read {VARIABLE}, nothing pre-ticked: {(exc.stderr or '').strip()}")
         return []
+    books = parse_books(value)
+    print(f"Currently selected: {len(books)} books (from {VARIABLE}).")
+    return books
 
 
 def build_choices(books: list[dict[str, str]], current: list[str]) -> list[tuple[str, str, bool]]:

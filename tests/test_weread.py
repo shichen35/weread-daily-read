@@ -334,6 +334,22 @@ class BooksTest(unittest.TestCase):
             self.assertEqual(books.fetch_shelf("o/r"), [{"book_id": "1"}])
         self.assertEqual(calls, [["workflow", "run"], ["run", "list"], ["run", "watch"], ["run", "download"]])
 
+    def test_current_books_reads_variable_over_rest(self):
+        with mock.patch("books.subprocess.run") as run, mock.patch("builtins.print"):
+            run.return_value.stdout = "1,2\n"
+            self.assertEqual(books.current_books("o/r"), ["1", "2"])
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[:3], ["gh", "api", "repos/{owner}/{repo}/actions/variables/WEREAD_BOOK"])
+        self.assertEqual(run.call_args.kwargs["env"]["GH_REPO"], "o/r")
+
+    def test_current_books_reports_failures(self):
+        for stderr, expected in (("HTTP 404: Not Found", "not set yet"), ("HTTP 401", "Warning")):
+            error = books.subprocess.CalledProcessError(1, ["gh"], stderr=stderr)
+            with mock.patch("books.subprocess.run", side_effect=error), \
+                    mock.patch("builtins.print") as printed:
+                self.assertEqual(books.current_books(""), [])
+            self.assertIn(expected, printed.call_args.args[0])
+
     def test_gh_passes_repo(self):
         with mock.patch("books.subprocess.run") as run:
             run.return_value.stdout = "x"
