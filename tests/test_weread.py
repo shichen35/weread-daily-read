@@ -201,5 +201,36 @@ class RunTest(unittest.TestCase):
         self.assertLess(len(account.reads), 10)
 
 
+class PlanTest(unittest.TestCase):
+    def test_parse_minutes(self):
+        self.assertEqual(report.parse_minutes("60"), (60, 60))
+        self.assertEqual(report.parse_minutes(" 45 - 75 "), (45, 75))
+        self.assertEqual(report.parse_minutes("75-45"), (45, 75))
+        for spec in ("60±10", "60 +- 10", "60+/-10"):
+            self.assertEqual(report.parse_minutes(spec), (50, 70))
+        self.assertEqual(report.parse_minutes("5±10"), (0, 15))
+        for bad in ("", "abc", "10-", "-5", "60±", "60+10"):
+            with self.assertRaises(ValueError):
+                report.parse_minutes(bad)
+
+    def test_no_window_starts_now(self):
+        delay, minutes = report.plan("60", 0)
+        self.assertEqual((delay, minutes), (0, 60))
+
+    def test_session_fits_in_window(self):
+        rng = report.random.Random(1)
+        for _ in range(500):
+            delay, minutes = report.plan("45-75", 180, rng)
+            self.assertTrue(45 <= minutes <= 75)
+            self.assertGreaterEqual(delay, 0)
+            self.assertLessEqual(delay / 60 + minutes, 180 + 1e-9)
+
+    def test_minutes_capped_by_window_and_window_capped(self):
+        delay, minutes = report.plan("90", 30)
+        self.assertEqual((delay, minutes), (0, 30))
+        delay, minutes = report.plan("60", 10_000, report.random.Random(2))
+        self.assertLessEqual(delay / 60 + minutes, report.MAX_WINDOW_MINUTES)
+
+
 if __name__ == "__main__":
     unittest.main()

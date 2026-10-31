@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Report WeRead reading time every --interval seconds for --minutes.
 
+--minutes takes a fixed value ("60"), a range ("45-75") or a value with a
+random +/- error ("60±10", also "60+-10" or "60+/-10"), picked at random
+each run. With --window W the run waits a random delay first so the reading
+session lands somewhere inside the next W minutes instead of always starting
+at the scheduled time.
+
 Mirrors the KOReader plugin's reporting pipeline: open the Web reader once,
 send an enter report, then periodic reports with rt=interval. On rejection it
 refreshes the reader context and retries, then renews the cookie (at most once
@@ -12,10 +18,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import random
+import re
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
@@ -36,6 +44,8 @@ CONTEXT_TTL_SECONDS = 15 * 60
 RENEW_EVERY_SECONDS = 20 * 60
 RENEW_COOLDOWN_SECONDS = 10 * 60
 MAX_CONSECUTIVE_FAILURES = 3
+# GitHub kills jobs after 360 min; keep room for setup and the last reports.
+MAX_WINDOW_MINUTES = 340
 NEVER = float("-inf")
 
 
@@ -99,6 +109,40 @@ class Reporter:
         return False
 
 
+_NUM = r"\s*(\d+(?:\.\d+)?)\s*"
+
+
+def parse_minutes(spec: str) -> tuple[float, float]:
+    """Parse "60", a range "45-75" or a jitter "60±10" / "60+-10" / "60+/-10"
+    into (low, high) minutes."""
+    spec = spec or ""
+    if match := re.fullmatch(_NUM + r"(?:±|\+/?-)" + _NUM, spec):
+        base, jitter = float(match.group(1)), float(match.group(2))
+        return max(base - jitter, 0.0), base + jitter
+    if match := re.fullmatch(_NUM + r"(?:-" + _NUM + r")?", spec):
+        low = float(match.group(1))
+        high = float(match.group(2) or low)
+        return min(low, high), max(low, high)
+    raise ValueError(
+        f"invalid minutes {spec!r}: use 60, a range like 45-75 or a jitter like 60±10"
+    )
+
+
+def plan(
+    minutes_spec: str, window: float, rng: random.Random | None = None
+) -> tuple[float, float]:
+    """Pick (delay_seconds, minutes) so the session ends within `window` minutes."""
+    rng = rng or random.Random()
+    low, high = parse_minutes(minutes_spec)
+    window = min(max(window, 0.0), MAX_WINDOW_MINUTES)
+    if window:
+        high = min(high, window)
+        low = min(low, high)
+    minutes = rng.uniform(low, high)
+    slack = max(window - minutes, 0.0)
+    return rng.uniform(0, slack) * 60, minutes
+
+
 def run(
     reporter: Reporter,
     minutes: float,
@@ -131,12 +175,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--book", default=os.environ.get("WEREAD_BOOK", ""),
                         help="bookId or weread.qq.com/web/reader/ URL (env WEREAD_BOOK)")
-    parser.add_argument("--minutes", type=float, default=float(os.environ.get("READ_MINUTES") or 60))
+    parser.add_argument("--minutes", default=os.environ.get("READ_MINUTES") or "60",
+                        help='minutes to report: 60, a random range 45-75 or 60±10 (env READ_MINUTES)')
+    parser.add_argument("--window", type=float, default=float(os.environ.get("READ_WINDOW") or 0),
+                        help="start at a random time so reading ends within this many minutes "
+                             f"(max {MAX_WINDOW_MINUTES}, 0 = start now; env READ_WINDOW)")
     parser.add_argument("--interval", type=int, default=30, help="seconds between reports (min 10)")
     parser.add_argument("--state-file", type=Path, help="read/write state here instead of env WEREAD_STATE")
     args = parser.parse_args()
     if not args.book:
         parser.error("--book or WEREAD_BOOK is required")
+    try:
+        delay, minutes = plan(args.minutes, args.window)
+    except ValueError as exc:
+        parser.error(str(exc))
     in_actions = os.environ.get("GITHUB_ACTIONS") == "true"
 
     account = Account(load_state(args.state_file))
@@ -148,7 +200,10 @@ def main() -> int:
             account.state, args.state_file, in_actions, os.environ.get("GITHUB_REPOSITORY", "")
         ),
     )
-    return run(reporter, args.minutes)
+    start = datetime.now() + timedelta(seconds=delay)
+    log(f"plan: wait {delay / 60:.1f} min, start {start:%H:%M:%S}, report {minutes:.1f} min")
+    time.sleep(delay)
+    return run(reporter, minutes)
 
 
 if __name__ == "__main__":
