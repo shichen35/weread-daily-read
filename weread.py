@@ -22,6 +22,7 @@ import requests
 BASE_URL = "https://weread.qq.com"
 RENEWAL_URL = f"{BASE_URL}/web/login/renewal"
 READ_URL = f"{BASE_URL}/web/book/read"
+CHAPTER_INFOS_URL = f"{BASE_URL}/web/book/chapterInfos"
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36 Edg/135.0.0.0"
@@ -140,6 +141,11 @@ def is_accepted(body: Any) -> bool:
         return False
     succ = body.get("succ")
     return succ is True or str(succ) == "1" or body.get("synckey") is not None
+
+
+def is_counted(body: Any) -> bool:
+    """A read report only adds reading time when the reply carries a synckey."""
+    return isinstance(body, dict) and body.get("synckey") is not None
 
 
 def merge_set_cookie(cookies: dict[str, str], set_cookie_lines: list[str]) -> dict[str, str]:
@@ -302,6 +308,13 @@ class Account:
             "token": reader.get("token") or "",
             "reader_url": url,
         }
+
+    def sync_chapters(self, book_id: str, referer: str) -> None:
+        """Fetch chapter infos, as the Web reader does; restores the synckey."""
+        response = self.request(
+            "POST", CHAPTER_INFOS_URL, referer=referer, json_body={"bookIds": [book_id]}
+        )
+        response.raise_for_status()
 
     def report(self, payload: dict[str, Any], referer: str) -> Any:
         response = self.request("POST", READ_URL, referer=referer, json_body=payload)

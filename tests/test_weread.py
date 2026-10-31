@@ -55,6 +55,11 @@ class ProtocolTest(unittest.TestCase):
         self.assertFalse(weread.is_accepted({"errCode": -2012}))
         self.assertFalse(weread.is_accepted(None))
 
+    def test_is_counted_needs_synckey(self):
+        self.assertTrue(weread.is_counted({"succ": 1, "synckey": 0}))
+        self.assertFalse(weread.is_counted({"succ": 1}))
+        self.assertFalse(weread.is_counted(None))
+
     def test_merge_set_cookie_keeps_one_value_per_name_and_drops_empty(self):
         cookies = {"wr_skey": "old", "wr_ql": "0", "other": "x"}
         weread.merge_set_cookie(cookies, [
@@ -152,6 +157,7 @@ class FakeAccount:
         self.replies = list(replies)
         self.renewals = 0
         self.opens = 0
+        self.syncs = 0
         self.reads = []
 
     def renew(self):
@@ -165,7 +171,10 @@ class FakeAccount:
         if "rt" not in payload:
             return {"succ": 1}
         self.reads.append(payload["rt"])
-        return self.replies.pop(0) if self.replies else {"succ": 1}
+        return self.replies.pop(0) if self.replies else {"succ": 1, "synckey": 1}
+
+    def sync_chapters(self, book_id, referer):
+        self.syncs += 1
 
 
 class RunTest(unittest.TestCase):
@@ -187,11 +196,25 @@ class RunTest(unittest.TestCase):
         self.assertEqual(account.opens, 5)  # start + every 15 min
 
     def test_rejection_refreshes_context_then_retries(self):
-        account = FakeAccount([{"errCode": 1}, {"succ": 1}])
+        account = FakeAccount([{"errCode": 1}, {"succ": 1, "synckey": 1}])
         code, reporter, _ = self.run_reporter(account, 1)
         self.assertEqual(code, 0)
         self.assertEqual(account.renewals, 1)  # only the startup renewal: cooldown not reached
         self.assertEqual(reporter.reported_seconds, 60)
+
+    def test_missing_synckey_syncs_chapters_then_retries(self):
+        account = FakeAccount([{"succ": 1}, {"succ": 1, "synckey": 2}])
+        code, reporter, _ = self.run_reporter(account, 1)
+        self.assertEqual(code, 0)
+        self.assertEqual(account.syncs, 1)
+        self.assertEqual(reporter.reported_seconds, 60)  # the uncounted report is not added
+
+    def test_stops_when_synckey_never_returns(self):
+        account = FakeAccount([{"succ": 1}] * 100)
+        code, reporter, _ = self.run_reporter(account, 30)
+        self.assertEqual(code, 1)
+        self.assertEqual(reporter.reported_seconds, 0)
+        self.assertGreater(account.syncs, 0)
 
     def test_stops_after_consecutive_failures(self):
         account = FakeAccount([{"errCode": 1}] * 100)
