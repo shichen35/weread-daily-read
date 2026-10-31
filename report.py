@@ -8,8 +8,9 @@ session lands somewhere inside the next W minutes instead of always starting
 at the scheduled time.
 
 Mirrors the KOReader plugin's reporting pipeline: open the Web reader once,
-send an enter report, then periodic reports with rt=interval. On rejection it
-refreshes the reader context and retries, then renews the cookie (at most once
+send an enter report, then periodic reports with rt=interval. A report only
+counts when the reply has a synckey; a reply with succ but no synckey triggers
+a chapterInfos sync. On failure it refreshes the reader context and retries, then renews the cookie (at most once
 per 10 minutes) and retries. Every successful renewal is saved immediately, to
 the WEREAD_STATE secret in GitHub Actions, so a killed job never loses it.
 """
@@ -35,6 +36,7 @@ from weread import (
     describe,
     enter_payload,
     is_accepted,
+    is_counted,
     load_state,
     read_payload,
     save_state,
@@ -86,9 +88,14 @@ class Reporter:
 
     def _send(self) -> bool:
         body = self.account.report(read_payload(self.ctx, self.interval), self.ctx["reader_url"])
-        if is_accepted(body):
+        if is_counted(body):
             self.reported_seconds += self.interval
             return True
+        if is_accepted(body):
+            # Accepted but not counted: sync chapter infos, then the caller retries.
+            log("report accepted without synckey; syncing chapters")
+            self.account.sync_chapters(self.ctx["book_id"], self.ctx["reader_url"])
+            return False
         log("report rejected:", describe(body))
         return False
 
