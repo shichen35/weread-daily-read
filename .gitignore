@@ -1,0 +1,7 @@
+state.json
+*.state.json
+__pycache__/
+.venv/
+.DS_Store
+.idea/
+.vscode/
