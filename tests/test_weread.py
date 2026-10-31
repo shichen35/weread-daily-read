@@ -6,6 +6,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import books  # noqa: E402
 import report  # noqa: E402
 import weread  # noqa: E402
 from weread import AuthError, sorted_query  # noqa: E402
@@ -295,6 +296,49 @@ class PlanTest(unittest.TestCase):
         self.assertEqual((delay, minutes), (0, 30))
         delay, minutes = report.plan("60", 10_000, report.random.Random(2))
         self.assertLessEqual(delay / 60 + minutes, report.MAX_WINDOW_MINUTES)
+
+
+class BooksTest(unittest.TestCase):
+    def test_find_run_picks_newest_after_trigger(self):
+        since = books.datetime(2026, 1, 1, 12, 0, tzinfo=books.timezone.utc)
+        runs = [
+            {"databaseId": 1, "createdAt": "2026-01-01T11:59:00Z"},
+            {"databaseId": 3, "createdAt": "2026-01-01T12:00:09Z"},
+            {"databaseId": 2, "createdAt": "2026-01-01T12:00:05Z"},
+        ]
+        self.assertEqual(books.find_run(runs, since), 3)
+        self.assertIsNone(books.find_run(runs[:1], since))
+
+    def test_build_choices_prechecks_current_and_keeps_missing(self):
+        shelf = [{"book_id": "1", "title": "A", "author": "X"}, {"book_id": "2", "title": "B", "author": ""}]
+        self.assertEqual(books.build_choices(shelf, ["2", "9"]), [
+            ("A — X", "1", False),
+            ("B", "2", True),
+            ("9 (not on shelf)", "9", True),
+        ])
+
+    def test_fetch_shelf_runs_workflow_and_reads_artifact(self):
+        calls = []
+
+        def fake_gh(args, repo="", capture=True):
+            calls.append(args[:2])
+            if args[:2] == ["run", "list"]:
+                now = books.datetime.now(books.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                return json.dumps([{"databaseId": 7, "createdAt": now}])
+            if args[:2] == ["run", "download"]:
+                Path(args[args.index("--dir") + 1], "shelf.json").write_text('[{"book_id": "1"}]')
+            return ""
+
+        with mock.patch("books.gh", side_effect=fake_gh), mock.patch("books.time.sleep"), \
+                mock.patch("builtins.print"):
+            self.assertEqual(books.fetch_shelf("o/r"), [{"book_id": "1"}])
+        self.assertEqual(calls, [["workflow", "run"], ["run", "list"], ["run", "watch"], ["run", "download"]])
+
+    def test_gh_passes_repo(self):
+        with mock.patch("books.subprocess.run") as run:
+            run.return_value.stdout = "x"
+            self.assertEqual(books.gh(["variable", "get", "WEREAD_BOOK"], "o/r"), "x")
+        self.assertEqual(run.call_args.args[0], ["gh", "variable", "get", "WEREAD_BOOK", "--repo", "o/r"])
 
 
 if __name__ == "__main__":
