@@ -53,6 +53,7 @@
 
 ## 5. 公开后的维护
 
+- [ ] `shelf` workflow 会把书架上传为 artifact（保留 1 天）。公开仓库的 artifact 所有人可见，确认能否接受；不能就改成只在日志里打印数量、或删掉 `shelf.yml`
 - [ ] 公开仓库 60 天没有提交，GitHub 会停用定时任务。加一个 keepalive，或者记得定期提交、到 Actions 页面重新启用
 - [ ] 可选：issue 模板、`CONTRIBUTING.md`、`SECURITY.md`
 
