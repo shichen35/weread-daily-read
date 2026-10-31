@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import sys
 import unittest
@@ -309,13 +310,14 @@ class BooksTest(unittest.TestCase):
         self.assertEqual(books.find_run(runs, since), 3)
         self.assertIsNone(books.find_run(runs[:1], since))
 
-    def test_build_choices_prechecks_current_and_keeps_missing(self):
-        shelf = [{"book_id": "1", "title": "A", "author": "X"}, {"book_id": "2", "title": "B", "author": ""}]
-        self.assertEqual(books.build_choices(shelf, ["2", "9"]), [
-            ("A — X", "1", False),
-            ("B", "2", True),
-            ("9 (not on shelf)", "9", True),
-        ])
+    def test_build_choices_lists_picked_first(self):
+        shelf = [{"book_id": "1", "title": "A", "author": "X"},
+                 {"book_id": "2", "title": "B", "author": ""},
+                 {"book_id": "3", "title": "C", "author": ""}]
+        url = weread.reader_url("3") + "?from=x"
+        picked, others = books.build_choices(shelf, ["2", "9", url, "3"])
+        self.assertEqual(picked, [("B", "2"), ("9 (not on shelf)", "9"), ("C", "3")])
+        self.assertEqual(others, [("A — X", "1")])
 
     def test_fetch_shelf_runs_workflow_and_reads_artifact(self):
         calls = []
@@ -333,6 +335,54 @@ class BooksTest(unittest.TestCase):
                 mock.patch("builtins.print"):
             self.assertEqual(books.fetch_shelf("o/r"), [{"book_id": "1"}])
         self.assertEqual(calls, [["workflow", "run"], ["run", "list"], ["run", "watch"], ["run", "download"]])
+
+    def test_current_books_reads_variable_over_rest(self):
+        with mock.patch("books.subprocess.run") as run, mock.patch("builtins.print"):
+            run.return_value.stdout = "1,2\n"
+            self.assertEqual(books.current_books("o/r"), ["1", "2"])
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[:3], ["gh", "api", "repos/{owner}/{repo}/actions/variables/WEREAD_BOOK"])
+        self.assertEqual(run.call_args.kwargs["env"]["GH_REPO"], "o/r")
+
+    def test_current_books_reports_failures(self):
+        for stderr, expected in (("HTTP 404: Not Found", "not set yet"), ("HTTP 401", "Warning")):
+            error = books.subprocess.CalledProcessError(1, ["gh"], stderr=stderr)
+            with mock.patch("books.subprocess.run", side_effect=error), \
+                    mock.patch("builtins.print") as printed:
+                self.assertEqual(books.current_books(""), [])
+            self.assertIn(expected, printed.call_args.args[0])
+
+    def test_step_index_clamps_and_skips_separators(self):
+        valid = [True, True, False, True, True]
+        self.assertEqual(books.step_index(valid, 0, 10), 4)
+        self.assertEqual(books.step_index(valid, 4, -10), 0)
+        self.assertEqual(books.step_index(valid, 0, 2), 3)  # separator at 2, keep going down
+        self.assertEqual(books.step_index(valid, 4, -2), 1)  # separator at 2, keep going up
+        self.assertEqual(books.step_index([False, True, False], 1, 5), 1)  # nothing below: step back
+        self.assertEqual(books.step_index([False], 0, 1), 0)
+
+    @unittest.skipUnless(importlib.util.find_spec("questionary"), "questionary not installed")
+    def test_paging_keys_in_checkbox(self):
+        import questionary
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        def pick(keys):
+            choices = [questionary.Choice("picked", value="p", checked=True), questionary.Separator()]
+            choices += [questionary.Choice(f"book {i}", value=str(i)) for i in range(100)]
+            with create_pipe_input() as pipe:
+                pipe.send_text(keys)
+                question = books.add_paging(questionary.checkbox(
+                    "x", choices=choices, input=pipe, output=DummyOutput()))
+                return question.unsafe_ask()
+
+        page_down, page_up, home, end = "\x1b[6~", "\x1b[5~", "\x1b[H", "\x1b[F"
+        self.assertEqual(pick(end + " \r"), ["p", "99"])
+        self.assertEqual(pick(end + home + " \r"), [])  # home lands on "picked" and unticks it
+        down = pick(page_down + " \r")
+        self.assertEqual(len(down), 2)
+        self.assertNotIn(down[1], ("0", "99"))
+        self.assertEqual(pick(page_down + page_up + " \r"), [])
 
     def test_gh_passes_repo(self):
         with mock.patch("books.subprocess.run") as run:

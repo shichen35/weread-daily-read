@@ -45,7 +45,9 @@ gh secret set STATE_WRITER_PAT
 .venv/bin/python books.py
 ```
 
-它会触发 `shelf` workflow，用 `WEREAD_STATE` 在 Actions 里拉取书架（本地不用再登录），约一分钟后显示书架：↑↓ 移动，空格勾选，回车确认，再确认一次后写入 `WEREAD_BOOK`。之后想换书，重新运行即可；当前已选的书会默认勾上。加 `--dry-run` 只打印结果不写入。
+它会触发 `shelf` workflow，用 `WEREAD_STATE` 在 Actions 里拉取书架（本地不用再登录），约一分钟后显示书架：↑↓ 移动，PgUp/PgDn 翻页，Home/End 跳到首尾，空格勾选，回车确认，再确认一次后写入 `WEREAD_BOOK`。
+
+之后想换书，重新运行即可：已选的书排在最上面并默认勾上，只需增减。加 `--dry-run` 只打印结果不写入（下次也不会预选）。
 
 **5. 试运行两分钟：**
 
