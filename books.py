@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -117,6 +118,51 @@ def build_choices(
     return picked, others
 
 
+def step_index(valid: list[bool], current: int, delta: int) -> int:
+    """Move by delta without wrapping, landing on a selectable row (not a separator)."""
+    if not any(valid):
+        return current
+    last = len(valid) - 1
+    target = min(max(current + delta, 0), last)
+    forward = 1 if delta >= 0 else -1
+    for step in (forward, -forward):
+        i = target
+        while 0 <= i <= last:
+            if valid[i]:
+                return i
+            i += step
+    return current
+
+
+def add_paging(question: Any) -> Any:
+    """Add PgUp/PgDn/Home/End to a questionary checkbox."""
+    from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+    from questionary import Separator
+    from questionary.prompts.common import InquirerControl
+
+    app = question.application
+    control = next(c for c in app.layout.find_all_controls() if isinstance(c, InquirerControl))
+    window = next((w for w in app.layout.find_all_windows() if w.content is control), None)
+
+    def page() -> int:
+        info = window.render_info if window else None
+        height = info.window_height if info else shutil.get_terminal_size().lines - 4
+        return max(1, height - 1)
+
+    def move(delta: int) -> None:
+        rows = control.filtered_choices
+        valid = [not isinstance(c, Separator) and not c.disabled for c in rows]
+        control.pointed_at = step_index(valid, control.pointed_at, delta)
+
+    keys = KeyBindings()
+    keys.add("pagedown", eager=True)(lambda _: move(page()))
+    keys.add("pageup", eager=True)(lambda _: move(-page()))
+    keys.add("end", eager=True)(lambda _: move(len(control.filtered_choices)))
+    keys.add("home", eager=True)(lambda _: move(-len(control.filtered_choices)))
+    app.key_bindings = merge_key_bindings([app.key_bindings, keys])
+    return question
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--repo", default="", help="owner/name (default: the current repo)")
@@ -136,11 +182,11 @@ def main() -> int:
     if current and others:
         choices.append(questionary.Separator("── shelf ──"))
     choices += [questionary.Choice(label, value=value) for label, value in others]
-    picked = questionary.checkbox(
+    picked = add_paging(questionary.checkbox(
         "Books to report (one is picked at random each day):",
         choices=choices,
-        instruction="(↑↓ move, space toggle, enter confirm)",
-    ).ask()
+        instruction="(↑↓ move, PgUp/PgDn page, Home/End, space toggle, enter confirm)",
+    )).ask()
     if not picked:
         print("Nothing selected; WEREAD_BOOK unchanged.")
         return 0

@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import sys
 import unittest
@@ -350,6 +351,38 @@ class BooksTest(unittest.TestCase):
                     mock.patch("builtins.print") as printed:
                 self.assertEqual(books.current_books(""), [])
             self.assertIn(expected, printed.call_args.args[0])
+
+    def test_step_index_clamps_and_skips_separators(self):
+        valid = [True, True, False, True, True]
+        self.assertEqual(books.step_index(valid, 0, 10), 4)
+        self.assertEqual(books.step_index(valid, 4, -10), 0)
+        self.assertEqual(books.step_index(valid, 0, 2), 3)  # separator at 2, keep going down
+        self.assertEqual(books.step_index(valid, 4, -2), 1)  # separator at 2, keep going up
+        self.assertEqual(books.step_index([False, True, False], 1, 5), 1)  # nothing below: step back
+        self.assertEqual(books.step_index([False], 0, 1), 0)
+
+    @unittest.skipUnless(importlib.util.find_spec("questionary"), "questionary not installed")
+    def test_paging_keys_in_checkbox(self):
+        import questionary
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        def pick(keys):
+            choices = [questionary.Choice("picked", value="p", checked=True), questionary.Separator()]
+            choices += [questionary.Choice(f"book {i}", value=str(i)) for i in range(100)]
+            with create_pipe_input() as pipe:
+                pipe.send_text(keys)
+                question = books.add_paging(questionary.checkbox(
+                    "x", choices=choices, input=pipe, output=DummyOutput()))
+                return question.unsafe_ask()
+
+        page_down, page_up, home, end = "\x1b[6~", "\x1b[5~", "\x1b[H", "\x1b[F"
+        self.assertEqual(pick(end + " \r"), ["p", "99"])
+        self.assertEqual(pick(end + home + " \r"), [])  # home lands on "picked" and unticks it
+        down = pick(page_down + " \r")
+        self.assertEqual(len(down), 2)
+        self.assertNotIn(down[1], ("0", "99"))
+        self.assertEqual(pick(page_down + page_up + " \r"), [])
 
     def test_gh_passes_repo(self):
         with mock.patch("books.subprocess.run") as run:

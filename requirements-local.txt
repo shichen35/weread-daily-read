@@ -1,4 +1,4 @@
 # Local tools only (login.py, books.py). The runner installs requirements.txt.
 -r requirements.txt
 qrcode>=8.2
-questionary>=2.0
+questionary>=2.0,<3
