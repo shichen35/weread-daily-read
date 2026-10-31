@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from weread import parse_books
+from weread import parse_books, reader_url
 
 WORKFLOW = "shelf.yml"
 VARIABLE = "WEREAD_BOOK"
@@ -90,15 +90,31 @@ def current_books(repo: str) -> list[str]:
     return books
 
 
-def build_choices(books: list[dict[str, str]], current: list[str]) -> list[tuple[str, str, bool]]:
-    """(label, value, checked) per book; current picks that are not on the shelf are kept at the end."""
-    choices = []
+def build_choices(
+    books: list[dict[str, str]], current: list[str]
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Split the shelf into (picked, others) as (label, value) pairs.
+
+    Picked books come in WEREAD_BOOK order; a saved reader URL counts as the
+    book it opens. Saved entries that are not on the shelf stay picked.
+    """
+    by_key: dict[str, dict[str, str]] = {}
     for book in books:
-        label = book["title"] + (f" — {book['author']}" if book.get("author") else "")
-        choices.append((label, book["book_id"], book["book_id"] in current))
-    on_shelf = {book["book_id"] for book in books}
-    choices += [(f"{item} (not on shelf)", item, True) for item in current if item not in on_shelf]
-    return choices
+        by_key[book["book_id"]] = book
+        by_key[reader_url(book["book_id"])] = book
+
+    def label(book: dict[str, str]) -> str:
+        return book["title"] + (f" — {book['author']}" if book.get("author") else "")
+
+    picked: list[tuple[str, str]] = []
+    for item in current:
+        book = by_key.get(item.split("?")[0])
+        choice = (label(book), book["book_id"]) if book else (f"{item} (not on shelf)", item)
+        if choice not in picked:
+            picked.append(choice)
+    picked_ids = {value for _, value in picked}
+    others = [(label(book), book["book_id"]) for book in books if book["book_id"] not in picked_ids]
+    return picked, others
 
 
 def main() -> int:
@@ -115,17 +131,21 @@ def main() -> int:
     if not books:
         print("No books on the shelf that the Web reader can open.")
         return 1
-    choices = build_choices(books, current_books(args.repo))
+    current, others = build_choices(books, current_books(args.repo))
+    choices = [questionary.Choice(label, value=value, checked=True) for label, value in current]
+    if current and others:
+        choices.append(questionary.Separator("── shelf ──"))
+    choices += [questionary.Choice(label, value=value) for label, value in others]
     picked = questionary.checkbox(
         "Books to report (one is picked at random each day):",
-        choices=[questionary.Choice(label, value=value, checked=checked) for label, value, checked in choices],
+        choices=choices,
         instruction="(↑↓ move, space toggle, enter confirm)",
     ).ask()
     if not picked:
         print("Nothing selected; WEREAD_BOOK unchanged.")
         return 0
 
-    labels = {value: label for label, value, _ in choices}
+    labels = {value: label for label, value in current + others}
     print("\n".join(f"  - {labels[value]}" for value in picked))
     value = ",".join(picked)
     if args.dry_run:

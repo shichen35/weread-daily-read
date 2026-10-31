@@ -309,13 +309,14 @@ class BooksTest(unittest.TestCase):
         self.assertEqual(books.find_run(runs, since), 3)
         self.assertIsNone(books.find_run(runs[:1], since))
 
-    def test_build_choices_prechecks_current_and_keeps_missing(self):
-        shelf = [{"book_id": "1", "title": "A", "author": "X"}, {"book_id": "2", "title": "B", "author": ""}]
-        self.assertEqual(books.build_choices(shelf, ["2", "9"]), [
-            ("A — X", "1", False),
-            ("B", "2", True),
-            ("9 (not on shelf)", "9", True),
-        ])
+    def test_build_choices_lists_picked_first(self):
+        shelf = [{"book_id": "1", "title": "A", "author": "X"},
+                 {"book_id": "2", "title": "B", "author": ""},
+                 {"book_id": "3", "title": "C", "author": ""}]
+        url = weread.reader_url("3") + "?from=x"
+        picked, others = books.build_choices(shelf, ["2", "9", url, "3"])
+        self.assertEqual(picked, [("B", "2"), ("9 (not on shelf)", "9"), ("C", "3")])
+        self.assertEqual(others, [("A — X", "1")])
 
     def test_fetch_shelf_runs_workflow_and_reads_artifact(self):
         calls = []
