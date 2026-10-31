@@ -2,9 +2,9 @@ name: daily-read
 
 on:
   schedule:
-    # 21:00 Beijing time; GitHub may start it late. With READ_WINDOW set,
+    # 01:00 Beijing time; GitHub may start it late. With READ_WINDOW set,
     # report.py waits a random delay so reading falls inside that window.
-    - cron: "0 13 * * *"
+    - cron: "0 17 * * *"
   workflow_dispatch:
     inputs:
       minutes:
