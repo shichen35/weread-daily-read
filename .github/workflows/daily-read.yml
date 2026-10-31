@@ -1,0 +1,43 @@
+name: daily-read
+
+on:
+  schedule:
+    # 01:00 Beijing time; GitHub may start it late. With READ_WINDOW set,
+    # report.py waits a random delay so reading falls inside that window.
+    - cron: "0 17 * * *"
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Minutes to report (60, a random range 45-75, or 60±10)
+        default: "60"
+      window:
+        description: Random start window in minutes (0 = start now)
+        default: "0"
+
+permissions:
+  contents: read
+
+# One writer for the WEREAD_STATE secret at a time.
+concurrency:
+  group: weread-state
+  cancel-in-progress: false
+
+jobs:
+  read:
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Report reading time
+        env:
+          WEREAD_STATE: ${{ secrets.WEREAD_STATE }}
+          GH_TOKEN: ${{ secrets.STATE_WRITER_PAT }}
+          WEREAD_BOOK: ${{ vars.WEREAD_BOOK }}
+          READ_MINUTES: ${{ inputs.minutes || vars.READ_MINUTES || '60' }}
+          # Manual runs use the input (default: start now); scheduled runs use the variable.
+          READ_WINDOW: ${{ github.event_name == 'schedule' && vars.READ_WINDOW || inputs.window || '0' }}
+        run: python report.py
