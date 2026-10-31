@@ -196,6 +196,7 @@ def main() -> int:
     value = ",".join(picked)
     if args.dry_run:
         print(f"{VARIABLE}={value}")
+        print("Dry run: nothing saved, so this selection won't be pre-ticked next time.")
         return 0
     if not questionary.confirm(f"Save these {len(picked)} books to {VARIABLE}?", default=True).ask():
         print("Cancelled; WEREAD_BOOK unchanged.")
