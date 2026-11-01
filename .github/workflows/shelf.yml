@@ -27,7 +27,7 @@ jobs:
           WEREAD_STATE: ${{ secrets.WEREAD_STATE }}
           GH_TOKEN: ${{ secrets.STATE_WRITER_PAT }}
         run: python shelf.py --out shelf.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: shelf
           path: shelf.json
